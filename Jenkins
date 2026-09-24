@@ -1,0 +1,8 @@
+pipeline {
+  agent any
+  stages {
+    stage('Checkout test') {
+      steps { sh 'git log -1 --oneline && ls -la' }
+    }
+  }
+}

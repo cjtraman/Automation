@@ -1,0 +1,75 @@
+pipeline {
+    agent any   // must be a node where terraform (and govc + jq, for approach 2) is installed
+
+    parameters {
+        string(name: 'VSPHERE_SERVER', defaultValue: 'vcenter.example.com', description: 'vCenter FQDN or IP')
+        string(name: 'DATACENTER',     defaultValue: 'DC1',                 description: 'vSphere datacenter name')
+        string(name: 'VM_NAMES',       defaultValue: '[]',                  description: 'JSON list, e.g. ["vm01","vm02"]')
+    }
+
+    environment {
+        TF_IN_AUTOMATION = 'true'
+        TF_INPUT         = '0'
+        TF_VAR_vsphere_server = "${params.VSPHERE_SERVER}"
+        TF_VAR_datacenter     = "${params.DATACENTER}"
+        TF_VAR_vm_names       = "${params.VM_NAMES}"
+        TF_DIR                = 'terraform'   // folder in the repo that holds list-vms.tf
+    }
+
+    stages {
+        // Declarative pipeline already checks out the repo, so no separate Checkout stage is needed.
+
+        stage('Init') {
+            steps {
+                dir(env.TF_DIR) {
+                    sh 'ls -la'                 // confirms list-vms.tf is present
+                    sh 'terraform version'
+                    sh 'terraform init -no-color'
+                }
+            }
+        }
+
+        stage('Validate') {
+            steps {
+                dir(env.TF_DIR) {
+                    sh 'terraform validate -no-color'
+                }
+            }
+        }
+
+        stage('Plan') {
+            steps {
+                // 'vcenter-creds' = Jenkins "Username with password" credential (must be created first)
+                withCredentials([usernamePassword(credentialsId: 'vcenter-creds',
+                                                  usernameVariable: 'TF_VAR_vsphere_user',
+                                                  passwordVariable: 'TF_VAR_vsphere_password')]) {
+                    dir(env.TF_DIR) {
+                        sh 'terraform plan -no-color -out=tfplan'
+                    }
+                }
+            }
+        }
+
+        stage('Apply') {
+            steps {
+                // This config only reads data sources, so apply just refreshes the outputs
+                withCredentials([usernamePassword(credentialsId: 'vcenter-creds',
+                                                  usernameVariable: 'TF_VAR_vsphere_user',
+                                                  passwordVariable: 'TF_VAR_vsphere_password')]) {
+                    dir(env.TF_DIR) {
+                        sh 'terraform apply -no-color -auto-approve tfplan'
+                        sh 'terraform output -no-color'
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        cleanup {
+            dir(env.TF_DIR) {
+                sh 'rm -f tfplan'
+            }
+        }
+    }
+}
